@@ -1,0 +1,12 @@
+[package]
+name = "llm-playground"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+futures-signals = "0.3.33"
+gtk = { version = "0.8.1", package = "gtk4", features = ["v4_12"] }
+reqwest-eventsource = "0.5.0"
+tokio = { version = "1.36.0", features = ["full"] }

@@ -1,0 +1,12 @@
+box {
+    padding: 5px;
+}
+
+textview {
+    font-size: small;
+    padding: 0.5em;
+}
+
+/* scrolledwindow {
+    height: 10em;
+} */
