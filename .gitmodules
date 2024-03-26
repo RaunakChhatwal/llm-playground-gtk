@@ -1,0 +1,3 @@
+[submodule "reqwest-eventsource"]
+	path = reqwest-eventsource
+	url = https://github.com/jpopesculian/reqwest-eventsource.git

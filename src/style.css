@@ -1,10 +1,14 @@
 box {
-    padding: 5px;
+    padding: 10px 20px;
 }
 
 textview {
     font-size: small;
     padding: 0.5em;
+}
+
+.response_label {
+    background-color: shade(@theme_bg_color, 0.85);
 }
 
 /* scrolledwindow {
