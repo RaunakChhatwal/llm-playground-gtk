@@ -1,15 +1,20 @@
-box {
-    padding: 10px 20px;
+.top-level-box {
+    padding: 12px 8px;
 }
 
-textview {
-    font-size: small;
+textview, .response_label {
+    font-size: 8pt;
     padding: 0.5em;
-}
-
-.response_label {
     background-color: shade(@theme_bg_color, 0.85);
 }
+
+/* textview { */
+/*     /* font-size: small; */ */
+/*     padding: 0.5em; */
+/* } */
+
+/* .response_label { */
+/* } */
 
 /* scrolledwindow {
     height: 10em;
