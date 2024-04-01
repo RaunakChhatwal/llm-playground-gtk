@@ -2,10 +2,14 @@
     padding: 12px 8px;
 }
 
-textview, .response_label {
+textview, .message_label, response {
     font-size: 8pt;
     padding: 0.5em;
     background-color: shade(@theme_bg_color, 0.85);
+}
+
+button {
+    font-size: 8pt;
 }
 
 /* textview { */
