@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
-use gtk::{glib, prelude::*};
+use gtk::{glib::{self, clone}, prelude::*};
 use futures_signals::{signal::{Mutable, SignalExt}, signal_vec::{MutableVec, SignalVecExt, VecDiff}};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use reqwest_eventsource::{Event, EventSource};
@@ -79,13 +79,14 @@ async fn fetch_response_tokens(exchanges: &[(String, String)], prompt: &str, str
             Err(err) => {
                 eprintln!("Error: {}", err);
                 es.close();
+                break;
             }
         }
     }
 }
 
-fn MessageTextBox(message: String) -> impl IsA<gtk::Widget> {
-    let label = gtk::Label::new(Some(&message));
+fn MessageTextBox(message: &str) -> gtk::Label {
+    let label = gtk::Label::new(Some(message));
     label.set_css_classes(&["message_label"]);
     label.set_xalign(0.0);
     label.set_wrap(true);
@@ -93,6 +94,16 @@ fn MessageTextBox(message: String) -> impl IsA<gtk::Widget> {
     label.set_selectable(true);
 
     return label;
+}
+
+fn EditableMessageTextBox(message: &str) -> gtk::TextView {
+    let text_view = gtk::TextView::new();
+    // text_view.set_height_request(50);
+    text_view.set_valign(gtk::Align::Start);
+    text_view.buffer().set_text(message);
+    text_view.set_wrap_mode(gtk::WrapMode::WordChar);
+
+    return text_view;
 }
 
 fn PromptTextBox(clear_prompt: Rc<Notify>) -> gtk::TextView {
@@ -149,10 +160,18 @@ fn ResponseTextBox(response_tokens: &MutableVec<String>, streaming: Mutable<bool
     return text_view;
 }
 
-fn NewButton(exchanges: MutableVec<(String, String)>, clear_prompt: Rc<Notify>) -> impl IsA<gtk::Widget> {
+fn NewButton(exchanges: MutableVec<(String, String)>, streaming: Mutable<bool>, clear_prompt: Rc<Notify>) -> impl IsA<gtk::Widget> {
     let button = gtk::Button::builder()
         .label("New")
         .build();
+
+    glib::spawn_future_local(streaming.signal().for_each({
+        let button = button.clone();
+        move |streaming| {
+            button.set_visible(!streaming);
+            async {}
+        }
+    }));    
 
     button.connect_clicked(move |_| {
         let exchanges = exchanges.clone();
@@ -177,6 +196,14 @@ fn SubmitButton(
         .label("Submit")
         .build();
 
+    glib::spawn_future_local(streaming.signal().for_each({
+        let button = button.clone();
+        move |streaming| {
+            button.set_visible(!streaming);
+            async {}
+        }
+    }));
+
     button.connect_clicked(move |_| {
         let exchanges = exchanges.clone();
         let prompt = prompt();
@@ -195,10 +222,9 @@ fn SubmitButton(
                 |token| response_tokens.lock_mut().push_cloned(token.to_string())
             ).await;
 
-            let response = response_tokens.lock_ref().concat();
-            if response != "" {    // response may be empty if cancel button is pressed before receiving first token
+            if !response_tokens.lock_ref().is_empty() {    // response may be empty if cancel button is pressed before receiving first token
                 *streaming.lock_mut() = false;
-                exchanges.lock_mut().push_cloned((prompt, response));
+                exchanges.lock_mut().push_cloned((prompt, response_tokens.lock_ref().concat()));
                 clear_prompt.notify_one();
                 response_tokens.lock_mut().clear();
             }
@@ -208,7 +234,7 @@ fn SubmitButton(
     return button;
 }
 
-fn get_buffer_content(buffer: gtk::TextBuffer) -> String {
+fn get_buffer_content(buffer: &gtk::TextBuffer) -> String {
     let (start, end) = &buffer.bounds();
     return buffer.text(start, end, false).to_string();
 }
@@ -218,12 +244,12 @@ fn CancelButton(streaming: Mutable<bool>) -> impl IsA<gtk::Widget> {
         .label("Cancel")
         .build();
     
-    button.connect_clicked({
-        let streaming = streaming.clone();
-        move |_| {
+    button.connect_clicked(clone!(
+        @strong streaming
+        => move |_| {
             *streaming.lock_mut() = false;
         }
-    });
+    ));
 
     glib::spawn_future_local(streaming.signal().for_each({
         let button = button.clone();
@@ -236,64 +262,257 @@ fn CancelButton(streaming: Mutable<bool>) -> impl IsA<gtk::Widget> {
     return button;
 }
 
-pub fn Chat() -> impl IsA<gtk::Widget> {
-    let exchanges: MutableVec<(String, String)> = MutableVec::new();
+fn EditModeButton(edit_mode: Mutable<bool>, streaming: Mutable<bool>) -> impl IsA<gtk::Widget> {
+    let button = gtk::Button::builder()
+        .label("Edit Mode")
+        .build();
+    
+    button.connect_clicked(clone!(
+        @weak button,
+        @strong edit_mode
+        => move |_| {
+            let val = *edit_mode.lock_ref();
+            *edit_mode.lock_mut() = !val;
+            if !val {
+                button.set_label("Static Mode");
+            } else {
+                button.set_label("Edit Mode");
+            }
+        }
+    ));
 
-    let scrolled_window = gtk::ScrolledWindow::new();
-    let vbox_messages = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    glib::spawn_future_local(streaming.signal().for_each({
+        let button = button.clone();
+        move |streaming| {
+            button.set_visible(!streaming);
+            async {}
+        }
+    }));
 
-    let clear_prompt = Rc::new(Notify::new());
-    let prompt_text_box = PromptTextBox(clear_prompt.clone());
+    return button;
+}
 
-    let response_tokens = MutableVec::new();
-    let streaming = Mutable::new(false);
-    let response_text_box = ResponseTextBox(&response_tokens, streaming.clone());
+fn HeaderOption(label: &str) -> gtk::Button {
+    let button = gtk::Button::new();
+    button.set_label(label);
+    button.set_css_classes(&["flat", "close_button"]);
+    button.remove_css_class("button");
 
-    vbox_messages.append(&prompt_text_box);
-    vbox_messages.append(&response_text_box);
+    return button;
+}
 
-    glib::spawn_future_local(exchanges.signal_vec_cloned().for_each({
-        let vbox_messages = vbox_messages.clone();
-        let prompt_text_box = prompt_text_box.clone();
-        move |vd| {
-            match vd {
-                VecDiff::Push { value: (user_message, assistant_message) } => {
-                    MessageTextBox(user_message).insert_before(&vbox_messages, Some(&prompt_text_box));
-                    MessageTextBox(assistant_message).insert_before(&vbox_messages, Some(&prompt_text_box));
-                },
-                VecDiff::RemoveAt { index } => {
-                    let mut child = vbox_messages.first_child().unwrap();
-                    for _ in 0..index {
-                        child = child.next_sibling().unwrap();
-                    }
-                    vbox_messages.remove(&child);
-                },
-                VecDiff::Clear {} => {
-                    while let Some(child) = vbox_messages.first_child() {
-                        if child == prompt_text_box {
-                            break;
-                        }
+type ExchangeWidget = gtk::Box;
+fn Exchange(
+    user_message: String,
+    assistant_message: String,
+    edit_mode: Mutable<bool>,
+    edit_exchange: impl Fn((String, String)) + 'static,
+    delete_exchange: impl Fn() + 'static
+) -> ExchangeWidget {
+    let exchange = gtk::Box::new(gtk::Orientation::Vertical, 5);
 
-                        vbox_messages.remove(&child);
-                    }
-                }
-                _ => panic!("Not supported.")
+    let exchange_header = gtk::Box::new(gtk::Orientation::Horizontal, 3);
+    exchange_header.set_css_classes(&["exchange_header"]);
+    let dummy_label = gtk::Label::new(None);
+    dummy_label.set_hexpand(true);
+    exchange_header.append(&dummy_label);
+
+    let edit_button = HeaderOption("Edit");
+    exchange_header.append(&edit_button);
+
+    let delete_button = HeaderOption("Delete");
+    delete_button.connect_clicked(move |_| delete_exchange());
+    exchange_header.append(&delete_button);
+
+    let done_button = HeaderOption("Done");
+    done_button.set_visible(false);
+    exchange_header.append(&done_button);
+
+    exchange.append(&exchange_header);
+
+    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 5);
+    let user_text_box = MessageTextBox(&user_message);
+    let editable_user_text_box = EditableMessageTextBox(&user_message);
+    vbox.append(&user_text_box);
+    let assistant_text_box = MessageTextBox(&assistant_message);
+    let editable_assistant_text_box = EditableMessageTextBox(&assistant_message);
+    vbox.append(&assistant_text_box);
+    vbox.set_hexpand(true);
+    exchange.append(&vbox);
+
+    glib::spawn_future_local(edit_mode.signal().for_each({
+        let vbox = vbox.clone();
+        move |edit_mode| {
+            exchange_header.set_visible(edit_mode);
+            if edit_mode {
+                vbox.set_spacing(5);
+            } else {
+                vbox.set_spacing(10);
             }
             async {}
         }
     }));
 
+    edit_button.connect_clicked(clone!(
+        @weak edit_button,
+        @weak delete_button,
+        @weak done_button,
+        @weak vbox,
+        @weak user_text_box,
+        @weak assistant_text_box,
+        @weak editable_user_text_box,
+        @weak editable_assistant_text_box
+        => move |_| {
+            edit_button.set_visible(false);
+            delete_button.set_visible(false);
+            vbox.remove(&user_text_box);
+            vbox.remove(&assistant_text_box);
+            editable_user_text_box.buffer().set_text(&user_text_box.label().to_string());
+            editable_assistant_text_box.buffer().set_text(&assistant_text_box.label().to_string());
+            vbox.append(&editable_user_text_box);
+            vbox.append(&editable_assistant_text_box);
+            done_button.set_visible(true);
+        }
+    ));
+
+    done_button.connect_clicked(clone!(
+        @weak done_button
+        => move |_| {
+            done_button.set_visible(false);
+            vbox.remove(&editable_user_text_box);
+            vbox.remove(&editable_assistant_text_box);
+            user_text_box.set_label(&get_buffer_content(&editable_user_text_box.buffer()));
+            assistant_text_box.set_label(&get_buffer_content(&editable_assistant_text_box.buffer()));
+            edit_exchange((user_text_box.label().to_string(), assistant_text_box.label().to_string()));
+            vbox.append(&editable_user_text_box);
+            vbox.append(&editable_assistant_text_box);
+            edit_button.set_visible(true);
+            delete_button.set_visible(true);
+        }
+    ));
+
+    return exchange;
+}
+
+fn edit_exchange(exchanges: &MutableVec<(String, String)>, new_exchange: (String, String), deletions: &Rc<RefCell<Vec<usize>>>, id: usize) {
+    let mut index = id;
+    for deletion in (*(*deletions)).borrow().iter() {
+        if index >= *deletion {
+            index -= 1;
+        }
+    }
+
+    exchanges.lock_mut().set_cloned(index, new_exchange);
+}
+
+fn delete_exchange(exchanges: &MutableVec<(String, String)>, deletions: &Rc<RefCell<Vec<usize>>>, id: usize) {
+    let mut index = id;
+    for deletion in (*(*deletions)).borrow().iter() {
+        if index >= *deletion {
+            index -= 1;
+        }
+    }
+
+    exchanges.lock_mut().remove(index);
+}
+
+fn Exchanges(
+    exchanges: MutableVec<(String, String)>,
+    response_tokens: MutableVec<String>,
+    streaming: Mutable<bool>,
+    edit_mode: Mutable<bool>,
+    clear_prompt: Rc<Notify>
+) -> (gtk::TextBuffer, gtk::Box) {
+    let id_counter = Rc::new(RefCell::new(0usize));
+    let deletions: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(vec![]));
+    let exchanges_memo: Rc<RefCell<Vec<(usize, ExchangeWidget)>>> = Rc::new(RefCell::new(vec![]));
+
+    let vbox_exchanges = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    let prompt_text_box = PromptTextBox(clear_prompt.clone());
+    let response_text_box = ResponseTextBox(&response_tokens, streaming.clone());
+
+    vbox_exchanges.append(&prompt_text_box);
+    vbox_exchanges.append(&response_text_box);
+
+    glib::spawn_future_local(exchanges.signal_vec_cloned().for_each({
+        let vbox_exchanges = vbox_exchanges.clone();
+        let prompt_text_box = prompt_text_box.clone();
+        let exchanges = exchanges.clone();
+        let edit_mode = edit_mode.clone();
+        move |vd| {
+            match vd {
+                VecDiff::UpdateAt { index: _, value: _ } => {},
+                VecDiff::Push { value: (user_message, assistant_message) } => {
+                    let id = *(*id_counter).borrow();
+                    *id_counter.borrow_mut() += 1;
+                    let edit_mode = edit_mode.clone();
+                    let exchange = Exchange(user_message, assistant_message, edit_mode, {
+                        let exchanges = exchanges.clone();
+                        let deletions = deletions.clone();
+                        move |new_exchange| edit_exchange(&exchanges, new_exchange, &deletions, id)
+                    }, {
+                        let exchanges = exchanges.clone();
+                        let deletions = deletions.clone();
+                        move || delete_exchange(&exchanges, &deletions, id)
+                    });
+                    exchange.insert_before(&vbox_exchanges, Some(&prompt_text_box));
+                    exchanges_memo.borrow_mut().push((id, exchange));
+                },
+                VecDiff::RemoveAt { index } => {
+                    let (id, child) = exchanges_memo.borrow_mut().remove(index);
+                    deletions.borrow_mut().push(id);
+                    vbox_exchanges.remove(&child);
+                },
+                VecDiff::Pop {} => {
+                    let (id, child) = exchanges_memo.borrow_mut().pop().unwrap();
+                    deletions.borrow_mut().push(id);
+                    vbox_exchanges.remove(&child);
+                },
+                VecDiff::Clear {} => {
+                    while let Some(child) = vbox_exchanges.first_child() {
+                        if child == prompt_text_box {
+                            break;
+                        }
+
+                        vbox_exchanges.remove(&child);
+                    }
+                },
+                _ => panic!("Not supported: {:?}", vd)
+            }
+            async {}
+        }
+    }));
+
+    return (prompt_text_box.buffer(), vbox_exchanges);
+}
+
+pub fn Chat() -> impl IsA<gtk::Widget> {
+    let exchanges: MutableVec<(String, String)> = MutableVec::new();
+    let response_tokens = MutableVec::new();
+    let streaming = Mutable::new(false);
+    let edit_mode = Mutable::new(false);
+    let clear_prompt = Rc::new(Notify::new());
+
+    let (prompt_buffer, vbox_exchanges) = Exchanges(
+        exchanges.clone(),
+        response_tokens.clone(),
+        streaming.clone(),
+        edit_mode.clone(),
+        clear_prompt.clone()
+    );
+
+    let scrolled_window = gtk::ScrolledWindow::new();
     scrolled_window.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    scrolled_window.set_child(Some(&vbox_messages));
+    scrolled_window.set_child(Some(&vbox_exchanges));
     scrolled_window.set_vexpand(true);
 
     let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 5);
 
-    hbox.append(&NewButton(exchanges.clone(), clear_prompt.clone()));
+    hbox.append(&NewButton(exchanges.clone(), streaming.clone(), clear_prompt.clone()));
 
     hbox.append(&SubmitButton(
         exchanges,
-        move || get_buffer_content(prompt_text_box.buffer()),
+        move || get_buffer_content(&prompt_buffer),
         clear_prompt,
         response_tokens,
         streaming.clone()
@@ -303,7 +522,9 @@ pub fn Chat() -> impl IsA<gtk::Widget> {
     dummy_label.set_hexpand(true);
     hbox.append(&dummy_label);
 
-    let cancel_button = CancelButton(streaming.clone());
+    hbox.append(&EditModeButton(edit_mode, streaming.clone()));
+
+    let cancel_button = CancelButton(streaming);
     hbox.append(&cancel_button);
 
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 5);

@@ -9,7 +9,18 @@ textview, .message_label, response {
 }
 
 button {
+    padding: 8px;
     font-size: 8pt;
+}
+
+.exchange_header {
+    padding: 0px 3px;
+    background-color: shade(@theme_bg_color, 0.85);
+}
+
+.close_button {
+    padding: 0 0;
+    font-size: 6pt;
 }
 
 /* textview { */
