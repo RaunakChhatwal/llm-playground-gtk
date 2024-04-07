@@ -263,14 +263,25 @@ fn APIKeyList(api_keys: Mutable<Vec<APIKey>>, changes_made: Mutable<bool>) -> Sc
         popup_window.present();
     }));
 
-    glib::spawn_future_local(api_keys.signal_cloned().for_each(move |api_keys| {
+    glib::spawn_future_local(api_keys.signal_cloned().for_each(move |api_keys_vec| {
         while let Some(child) = listbox.first_child() {
             listbox.remove(&child);
         }
-        for api_key in api_keys {
+        for api_key in api_keys_vec {
             let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 10);
             hbox.append(&Label::new(Some(&api_key.name)));
             hbox.append(&Label::new(Some(&api_key.provider.to_string())));
+
+            let delete_button = Button::new();
+            delete_button.set_css_classes(&["delete-button"]);
+            delete_button.set_label("-");
+            delete_button.connect_clicked(clone!(@strong api_keys => move |_| {
+                let mut lock = api_keys.lock_mut();
+                let index = lock.iter().position(|key| key.name == api_key.name).unwrap();
+                lock.remove(index);
+            }));
+            hbox.append(&delete_button);
+
             listbox.append(&hbox);
         }
         *changes_made.lock_mut() = true;

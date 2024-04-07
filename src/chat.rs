@@ -135,10 +135,10 @@ fn CancelButton(streaming: Mutable<bool>) -> impl IsA<gtk::Widget> {
     return button;
 }
 
-fn HeaderOption(label: &str) -> gtk::Button {
+fn ExchangeHeaderOption(label: &str) -> gtk::Button {
     let button = gtk::Button::new();
     button.set_label(label);
-    button.set_css_classes(&["flat", "close_button"]);
+    button.set_css_classes(&["flat", "exchange-header-button"]);
     button.remove_css_class("button");
 
     return button;
@@ -166,15 +166,15 @@ fn Exchange(
     hbox.set_css_classes(&["button-box"]);
     hbox.set_halign(gtk::Align::End);
     hbox.set_valign(gtk::Align::Start);
-    let edit_button = HeaderOption("Edit");
+    let edit_button = ExchangeHeaderOption("Edit");
     hbox.append(&edit_button);
 
-    let delete_button = HeaderOption("Delete");
+    let delete_button = ExchangeHeaderOption("Delete");
     delete_button.set_valign(gtk::Align::Start);
     delete_button.connect_clicked(move |_| delete_exchange());
     hbox.append(&delete_button);
 
-    let done_button = HeaderOption("Done");
+    let done_button = ExchangeHeaderOption("Done");
     done_button.set_visible(false);
     hbox.append(&done_button);
 

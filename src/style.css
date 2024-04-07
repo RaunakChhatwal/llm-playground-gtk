@@ -45,7 +45,11 @@ button {
     background-color: shade(@theme_bg_color, 0.85);
 }
 
-.close_button {
-    padding: 0 0;
+.exchange-header-button {
+    padding: 0;
     font-size: 6pt;
+}
+
+.delete-button {
+    padding: 0;
 }
