@@ -10,7 +10,7 @@ use crate::{settings::Settings, submit::SubmitButton, util::{get_buffer_content,
 
 fn MessageTextBox(message: &str) -> gtk::Label {
     let label = gtk::Label::new(Some(message));
-    label.set_css_classes(&["message_label"]);
+    label.set_css_classes(&["message-label"]);
     label.set_xalign(0.0);
     label.set_wrap(true);
     label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
@@ -135,36 +135,6 @@ fn CancelButton(streaming: Mutable<bool>) -> impl IsA<gtk::Widget> {
     return button;
 }
 
-fn EditModeButton(edit_mode: Mutable<bool>, streaming: Mutable<bool>) -> impl IsA<gtk::Widget> {
-    let button = gtk::Button::builder()
-        .label("Edit Mode")
-        .build();
-    
-    button.connect_clicked(clone!(
-        @weak button,
-        @strong edit_mode
-        => move |_| {
-            let val = *edit_mode.lock_ref();
-            *edit_mode.lock_mut() = !val;
-            if !val {
-                button.set_label("Static Mode");
-            } else {
-                button.set_label("Edit Mode");
-            }
-        }
-    ));
-
-    glib::spawn_future_local(streaming.signal().for_each({
-        let button = button.clone();
-        move |streaming| {
-            button.set_visible(!streaming);
-            async {}
-        }
-    }));
-
-    return button;
-}
-
 fn HeaderOption(label: &str) -> gtk::Button {
     let button = gtk::Button::new();
     button.set_label(label);
@@ -178,57 +148,51 @@ type ExchangeWidget = gtk::Box;
 fn Exchange(
     user_message: String,
     assistant_message: String,
-    edit_mode: Mutable<bool>,
     edit_exchange: impl Fn((String, String)) + 'static,
     delete_exchange: impl Fn() + 'static
 ) -> ExchangeWidget {
     let exchange = gtk::Box::new(gtk::Orientation::Vertical, 5);
 
-    let exchange_header = gtk::Box::new(gtk::Orientation::Horizontal, 3);
-    exchange_header.set_css_classes(&["exchange_header"]);
-    exchange_header.append(&DummyLabel(gtk::Orientation::Horizontal));
+    let overlay = gtk::Overlay::new();
 
+    let user_text_box = MessageTextBox(&user_message);
+    user_text_box.set_valign(gtk::Align::Start);
+    user_text_box.set_hexpand(true);
+    let editable_user_text_box = EditableMessageTextBox(&user_message);
+    editable_user_text_box.set_hexpand(true);
+    overlay.set_child(Some(&user_text_box));
+
+    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    hbox.set_css_classes(&["button-box"]);
+    hbox.set_halign(gtk::Align::End);
+    hbox.set_valign(gtk::Align::Start);
     let edit_button = HeaderOption("Edit");
-    exchange_header.append(&edit_button);
+    hbox.append(&edit_button);
 
     let delete_button = HeaderOption("Delete");
+    delete_button.set_valign(gtk::Align::Start);
     delete_button.connect_clicked(move |_| delete_exchange());
-    exchange_header.append(&delete_button);
+    hbox.append(&delete_button);
 
     let done_button = HeaderOption("Done");
     done_button.set_visible(false);
-    exchange_header.append(&done_button);
+    hbox.append(&done_button);
 
-    exchange.append(&exchange_header);
+    overlay.add_overlay(&hbox);
 
-    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 5);
-    let user_text_box = MessageTextBox(&user_message);
-    let editable_user_text_box = EditableMessageTextBox(&user_message);
-    vbox.append(&user_text_box);
+    exchange.append(&overlay);
+
     let assistant_text_box = MessageTextBox(&assistant_message);
     let editable_assistant_text_box = EditableMessageTextBox(&assistant_message);
-    vbox.append(&assistant_text_box);
-    vbox.set_hexpand(true);
-    exchange.append(&vbox);
-
-    glib::spawn_future_local(edit_mode.signal().for_each({
-        let vbox = vbox.clone();
-        move |edit_mode| {
-            exchange_header.set_visible(edit_mode);
-            if edit_mode {
-                vbox.set_spacing(5);
-            } else {
-                vbox.set_spacing(10);
-            }
-            async {}
-        }
-    }));
+    exchange.append(&assistant_text_box);
+    exchange.set_hexpand(true);
 
     edit_button.connect_clicked(clone!(
         @weak edit_button,
         @weak delete_button,
         @weak done_button,
-        @weak vbox,
+        @weak overlay,
+        @weak exchange,
         @strong user_text_box,
         @strong assistant_text_box,
         @strong editable_user_text_box,
@@ -236,27 +200,26 @@ fn Exchange(
         => move |_| {
             edit_button.set_visible(false);
             delete_button.set_visible(false);
-            vbox.remove(&user_text_box);
-            vbox.remove(&assistant_text_box);
+            exchange.remove(&assistant_text_box);
             editable_user_text_box.buffer().set_text(&user_text_box.label().to_string());
             editable_assistant_text_box.buffer().set_text(&assistant_text_box.label().to_string());
-            vbox.append(&editable_user_text_box);
-            vbox.append(&editable_assistant_text_box);
+            overlay.set_child(Some(&editable_user_text_box));
+            exchange.append(&editable_assistant_text_box);
             done_button.set_visible(true);
         }
     ));
 
     done_button.connect_clicked(clone!(
-        @weak done_button
+        @weak done_button,
+        @weak exchange
         => move |_| {
             done_button.set_visible(false);
-            vbox.remove(&editable_user_text_box);
-            vbox.remove(&editable_assistant_text_box);
+            exchange.remove(&editable_assistant_text_box);
             user_text_box.set_label(&get_buffer_content(&editable_user_text_box.buffer()));
             assistant_text_box.set_label(&get_buffer_content(&editable_assistant_text_box.buffer()));
             edit_exchange((user_text_box.label().to_string(), assistant_text_box.label().to_string()));
-            vbox.append(&editable_user_text_box);
-            vbox.append(&editable_assistant_text_box);
+            overlay.set_child(Some(&user_text_box));
+            exchange.append(&assistant_text_box);
             edit_button.set_visible(true);
             delete_button.set_visible(true);
         }
@@ -291,7 +254,6 @@ fn Exchanges(
     exchanges: MutableVec<(String, String)>,
     response_tokens: MutableVec<String>,
     streaming: Mutable<bool>,
-    edit_mode: Mutable<bool>,
     clear_prompt: Rc<Notify>
 ) -> (gtk::TextBuffer, gtk::Box) {
     let id_counter = Rc::new(RefCell::new(0usize));
@@ -309,15 +271,13 @@ fn Exchanges(
         let vbox_exchanges = vbox_exchanges.clone();
         let prompt_text_box = prompt_text_box.clone();
         let exchanges = exchanges.clone();
-        let edit_mode = edit_mode.clone();
         move |vd| {
             match vd {
                 VecDiff::UpdateAt { index: _, value: _ } => {},
                 VecDiff::Push { value: (user_message, assistant_message) } => {
                     let id = *(*id_counter).borrow();
                     *id_counter.borrow_mut() += 1;
-                    let edit_mode = edit_mode.clone();
-                    let exchange = Exchange(user_message, assistant_message, edit_mode, {
+                    let exchange = Exchange(user_message, assistant_message, {
                         let exchanges = exchanges.clone();
                         let deletions = deletions.clone();
                         move |new_exchange| edit_exchange(&exchanges, new_exchange, &deletions, id)
@@ -368,14 +328,12 @@ pub fn Chat(stack: gtk::Stack, settings: Mutable<Settings>) -> impl IsA<gtk::Wid
     let exchanges: MutableVec<(String, String)> = MutableVec::new();
     let response_tokens = MutableVec::new();
     let streaming = Mutable::new(false);
-    let edit_mode = Mutable::new(false);
     let clear_prompt = Rc::new(Notify::new());
 
     let (prompt_buffer, vbox_exchanges) = Exchanges(
         exchanges.clone(),
         response_tokens.clone(),
         streaming.clone(),
-        edit_mode.clone(),
         clear_prompt.clone()
     );
 
@@ -402,7 +360,6 @@ pub fn Chat(stack: gtk::Stack, settings: Mutable<Settings>) -> impl IsA<gtk::Wid
     let cancel_button = CancelButton(streaming.clone());
     hbox.append(&cancel_button);
 
-    hbox.append(&EditModeButton(edit_mode, streaming));
     hbox.append(&SettingsButton(stack));
 
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 5);

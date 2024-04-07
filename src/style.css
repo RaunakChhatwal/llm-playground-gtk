@@ -7,9 +7,14 @@
     background-color: @theme_bg_color;
 }
 
-textview, .message_label, .response {
+.button-box {
+    background-color: shade(@theme_bg_color, 0.85);
+}
+
+textview, .message-label, .response {
     font-size: 8pt;
     padding: 0.5em;
+    padding-right: 0;
     background-color: shade(@theme_bg_color, 0.85);
 }
 

@@ -11,7 +11,6 @@ futures = "0.3.30"
 futures-util = "0.3.30"
 gtk = { version = "0.8.1", package = "gtk4", features = ["v4_12"] }
 lazy_static = "1.4.0"
-redux-rs = "0.3.3"
 reqwest = "0.12.2"
 reqwest-eventsource = { path="./reqwest-eventsource" }
 serde = "1.0.197"
