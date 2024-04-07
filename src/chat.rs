@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 use std::{cell::RefCell, rc::Rc};
 
-use gtk::{glib::{self, clone}, prelude::*};
+use gtk::{glib::{self, clone}, prelude::*, Label};
 use futures_signals::{signal::{Mutable, SignalExt}, signal_vec::{MutableVec, SignalVecExt, VecDiff}};
 use tokio::sync::Notify;
 
@@ -151,7 +151,7 @@ fn Exchange(
     edit_exchange: impl Fn((String, String)) + 'static,
     delete_exchange: impl Fn() + 'static
 ) -> ExchangeWidget {
-    let exchange = gtk::Box::new(gtk::Orientation::Vertical, 5);
+    let exchange = gtk::Box::new(gtk::Orientation::Vertical, 10);
 
     let overlay = gtk::Overlay::new();
 
@@ -324,10 +324,27 @@ fn SettingsButton(stack: gtk::Stack) -> gtk::Button {
     return button;
 }
 
+fn ErrorLabel(error: Mutable<String>) -> Label {
+    let label = Label::new(Some(""));
+    label.set_css_classes(&["error-label"]);
+
+    glib::spawn_future_local(error.signal_cloned().for_each({
+        let label = label.clone();
+        move |error| {
+            label.set_text(&error);
+            label.set_visible(&error != "");
+            async {}
+        }
+    }));
+
+    return label;
+}
+
 pub fn Chat(stack: gtk::Stack, settings: Mutable<Settings>) -> impl IsA<gtk::Widget> {
     let exchanges: MutableVec<(String, String)> = MutableVec::new();
     let response_tokens = MutableVec::new();
     let streaming = Mutable::new(false);
+    let error = Mutable::new(String::new());
     let clear_prompt = Rc::new(Notify::new());
 
     let (prompt_buffer, vbox_exchanges) = Exchanges(
@@ -352,6 +369,7 @@ pub fn Chat(stack: gtk::Stack, settings: Mutable<Settings>) -> impl IsA<gtk::Wid
         settings,
         clear_prompt,
         response_tokens,
+        error.clone(),
         streaming.clone()
     ));
 
@@ -364,6 +382,7 @@ pub fn Chat(stack: gtk::Stack, settings: Mutable<Settings>) -> impl IsA<gtk::Wid
 
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 5);
     vbox.set_css_classes(&["top-level-box"]);
+    vbox.append(&ErrorLabel(error));
     vbox.append(&scrolled_window);
     vbox.append(&hbox);
     

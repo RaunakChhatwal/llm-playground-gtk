@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use futures::StreamExt;
-use gtk::{glib, prelude::*};
+use gtk::{glib::{self, clone}, prelude::*};
 use futures_signals::{signal::{Mutable, SignalExt}, signal_vec::MutableVec};
 use reqwest::{header::{HeaderMap, HeaderValue, CONTENT_TYPE}, RequestBuilder};
 use reqwest_eventsource::{Event, EventSource};
@@ -39,7 +39,8 @@ async fn fetch_response_tokens(
     settings: Mutable<Settings>,
     exchanges: &[(String, String)],
     prompt: &str, streaming: Mutable<bool>,
-    mut cb: impl FnMut(&str)
+    res: impl Fn(&str),
+    err: impl Fn(String)
 ) {
     let settings = settings.lock_ref().clone();
 
@@ -79,6 +80,7 @@ async fn fetch_response_tokens(
     let mut es = EventSource::new(request_builder).unwrap();
     while let Some(event) = es.next().await {
         if !(*streaming.lock_ref()) {
+            es.close();
             break;
         }
 
@@ -89,25 +91,21 @@ async fn fetch_response_tokens(
                     match api_key.provider {
                         Provider::OpenAI => {
                             if let Some(token) = data["choices"][0]["delta"]["content"].as_str() {
-                                cb(token);
+                                res(token);
                             }
                         },
                         Provider::Anthropic => {
                             if let Some(token) = data["delta"]["text"].as_str() {
-                                cb(token);
+                                res(token);
                             }
                         }
                     };
                 }
             },
-            Err(reqwest_eventsource::Error::StreamEnded) => {
+            Err(reqwest_eventsource::Error::StreamEnded) => { es.close(); },
+            Err(err_msg) => {
+                err(err_msg.to_string());
                 es.close();
-                break;
-            },
-            Err(err) => {
-                eprintln!("Error: {}", err);
-                es.close();
-                break;
             }
         }
     }
@@ -119,6 +117,7 @@ pub fn SubmitButton(
     settings: Mutable<Settings>,
     clear_prompt: Rc<Notify>,
     response_tokens: MutableVec<String>,
+    error: Mutable<String>,
     streaming: Mutable<bool>
 ) -> impl IsA<gtk::Widget> {
     let button = gtk::Button::builder()
@@ -134,32 +133,36 @@ pub fn SubmitButton(
     }));
 
     button.connect_clicked(move |_| {
-        let settings = settings.clone();
-        let exchanges = exchanges.clone();
+        *error.lock_mut() = String::new();
         let prompt = prompt();
-        let clear_prompt = clear_prompt.clone();
-        let response_tokens = response_tokens.clone();
-        let streaming = streaming.clone();
 
-        glib::spawn_future_local(async move {
-            assert!(response_tokens.lock_ref().is_empty());
-            assert_eq!(*streaming.lock_ref(), false);
-            *streaming.lock_mut() = true;
-            fetch_response_tokens(
-                settings,
-                exchanges.lock_ref().as_ref(),
-                &prompt,
-                streaming.clone(),
-                |token| response_tokens.lock_mut().push_cloned(token.to_string())
-            ).await;
+        glib::spawn_future_local(clone!(
+            @strong settings,
+            @strong exchanges,
+            @strong clear_prompt,
+            @strong response_tokens,
+            @strong error,
+            @strong streaming => async move {
+                assert!(response_tokens.lock_ref().is_empty());
+                assert_eq!(*streaming.lock_ref(), false);
+                *streaming.lock_mut() = true;
+                fetch_response_tokens(
+                    settings,
+                    exchanges.lock_ref().as_ref(),
+                    &prompt,
+                    streaming.clone(),
+                    |token| response_tokens.lock_mut().push_cloned(token.to_string()),
+                    |err| { *error.lock_mut() = err; }
+                ).await;
 
-            if !response_tokens.lock_ref().is_empty() {    // response may be empty if cancel button is pressed before receiving first token
                 *streaming.lock_mut() = false;
-                exchanges.lock_mut().push_cloned((prompt, response_tokens.lock_ref().concat()));
-                clear_prompt.notify_one();
-                response_tokens.lock_mut().clear();
+                if !response_tokens.lock_ref().is_empty() {    // response may be empty if cancel button is pressed before receiving first token
+                    exchanges.lock_mut().push_cloned((prompt, response_tokens.lock_ref().concat()));
+                    clear_prompt.notify_one();
+                    response_tokens.lock_mut().clear();
+                }
             }
-        });
+        ));
     });
 
     return button;
