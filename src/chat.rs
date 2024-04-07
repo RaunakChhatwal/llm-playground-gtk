@@ -3,87 +3,10 @@ use std::{cell::RefCell, rc::Rc};
 
 use gtk::{glib::{self, clone}, prelude::*};
 use futures_signals::{signal::{Mutable, SignalExt}, signal_vec::{MutableVec, SignalVecExt, VecDiff}};
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
-use reqwest_eventsource::{Event, EventSource};
-use futures_util::StreamExt;
-use serde::Deserialize;
-use serde_json::json;
 use tokio::sync::Notify;
 
-#[derive(Deserialize)]
-struct KeyEntry {
-    key: String
-}
+use crate::{settings::Settings, submit::SubmitButton, util::{get_buffer_content, DummyLabel}};
 
-#[derive(Deserialize)]
-struct AppConfig {
-    keys: Vec<KeyEntry>
-}
-
-async fn fetch_response_tokens(exchanges: &[(String, String)], prompt: &str, streaming: Mutable<bool>, mut cb: impl FnMut(&str)) {
-    let config = std::fs::read_to_string("/home/raunak/.config/llm-playground/config.json").expect("Config not present.");
-    let config: AppConfig = serde_json::from_str(&config)
-        .expect("Bad config.");
-    let api_key = config.keys[0].key.clone();
-
-    let mut headers = HeaderMap::new();
-    headers.insert("x-api-key", HeaderValue::from_str(&api_key).unwrap());
-    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-    let mut messages: Vec<serde_json::Value> = vec![];
-    for (prompt, response) in exchanges {
-        messages.push(json!({
-            "role": "user",
-            "content": prompt
-        }));
-
-        messages.push(json!({
-            "role": "assistant",
-            "content": response
-        }));
-    }
-    messages.push(json!({
-        "role": "user",
-        "content": prompt
-    }));
-
-    let body = json!({
-        "model": "claude-3-opus-20240229",
-        "max_tokens": 2048,
-        "stream": true,
-        "messages": messages
-    });
-
-    let rb = reqwest::Client::new()
-        .post("https://api.anthropic.com/v1/messages")
-        .headers(headers)
-        .body(body.to_string());
-
-    let mut es = EventSource::new(rb).unwrap();
-    while let Some(event) = es.next().await {
-        if !(*streaming.lock_ref()) {
-            break;
-        }
-
-        match event {
-            Ok(Event::Open) => (), // println!("Connection Open!"),
-            Ok(Event::Message(message)) => {
-                // {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I"}     }
-                let data: serde_json::Value = serde_json::from_str(&message.data).expect("Stream response not in valid JSON format.");
-                if let Some(token) = data["delta"]["text"].as_str() {
-                    cb(token);
-                }
-            },
-            Err(reqwest_eventsource::Error::StreamEnded) => es.close(),
-            Err(err) => {
-                eprintln!("Error: {}", err);
-                es.close();
-                break;
-            }
-        }
-    }
-}
 
 fn MessageTextBox(message: &str) -> gtk::Label {
     let label = gtk::Label::new(Some(message));
@@ -160,7 +83,11 @@ fn ResponseTextBox(response_tokens: &MutableVec<String>, streaming: Mutable<bool
     return text_view;
 }
 
-fn NewButton(exchanges: MutableVec<(String, String)>, streaming: Mutable<bool>, clear_prompt: Rc<Notify>) -> impl IsA<gtk::Widget> {
+fn NewButton(
+    exchanges: MutableVec<(String, String)>,
+    streaming: Mutable<bool>,
+    clear_prompt: Rc<Notify>
+) -> impl IsA<gtk::Widget> {
     let button = gtk::Button::builder()
         .label("New")
         .build();
@@ -183,60 +110,6 @@ fn NewButton(exchanges: MutableVec<(String, String)>, streaming: Mutable<bool>, 
     });
 
     return button;
-}
-
-fn SubmitButton(
-    exchanges: MutableVec<(String, String)>,
-    prompt: impl Fn() -> String + 'static,
-    clear_prompt: Rc<Notify>,
-    response_tokens: MutableVec<String>,
-    streaming: Mutable<bool>
-) -> impl IsA<gtk::Widget> {
-    let button = gtk::Button::builder()
-        .label("Submit")
-        .build();
-
-    glib::spawn_future_local(streaming.signal().for_each({
-        let button = button.clone();
-        move |streaming| {
-            button.set_visible(!streaming);
-            async {}
-        }
-    }));
-
-    button.connect_clicked(move |_| {
-        let exchanges = exchanges.clone();
-        let prompt = prompt();
-        let clear_prompt = clear_prompt.clone();
-        let response_tokens = response_tokens.clone();
-        let streaming = streaming.clone();
-
-        glib::spawn_future_local(async move {
-            assert_eq!(response_tokens.lock_ref().len(), 0);
-            assert_eq!(*streaming.lock_ref(), false);
-            *streaming.lock_mut() = true;
-            fetch_response_tokens(
-                exchanges.lock_ref().as_ref(),
-                &prompt,
-                streaming.clone(),
-                |token| response_tokens.lock_mut().push_cloned(token.to_string())
-            ).await;
-
-            if !response_tokens.lock_ref().is_empty() {    // response may be empty if cancel button is pressed before receiving first token
-                *streaming.lock_mut() = false;
-                exchanges.lock_mut().push_cloned((prompt, response_tokens.lock_ref().concat()));
-                clear_prompt.notify_one();
-                response_tokens.lock_mut().clear();
-            }
-        });
-    });
-
-    return button;
-}
-
-fn get_buffer_content(buffer: &gtk::TextBuffer) -> String {
-    let (start, end) = &buffer.bounds();
-    return buffer.text(start, end, false).to_string();
 }
 
 fn CancelButton(streaming: Mutable<bool>) -> impl IsA<gtk::Widget> {
@@ -313,9 +186,7 @@ fn Exchange(
 
     let exchange_header = gtk::Box::new(gtk::Orientation::Horizontal, 3);
     exchange_header.set_css_classes(&["exchange_header"]);
-    let dummy_label = gtk::Label::new(None);
-    dummy_label.set_hexpand(true);
-    exchange_header.append(&dummy_label);
+    exchange_header.append(&DummyLabel(gtk::Orientation::Horizontal));
 
     let edit_button = HeaderOption("Edit");
     exchange_header.append(&edit_button);
@@ -358,10 +229,10 @@ fn Exchange(
         @weak delete_button,
         @weak done_button,
         @weak vbox,
-        @weak user_text_box,
-        @weak assistant_text_box,
-        @weak editable_user_text_box,
-        @weak editable_assistant_text_box
+        @strong user_text_box,
+        @strong assistant_text_box,
+        @strong editable_user_text_box,
+        @strong editable_assistant_text_box
         => move |_| {
             edit_button.set_visible(false);
             delete_button.set_visible(false);
@@ -425,7 +296,7 @@ fn Exchanges(
 ) -> (gtk::TextBuffer, gtk::Box) {
     let id_counter = Rc::new(RefCell::new(0usize));
     let deletions: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(vec![]));
-    let exchanges_memo: Rc<RefCell<Vec<(usize, ExchangeWidget)>>> = Rc::new(RefCell::new(vec![]));
+    let exchanges_memo: Rc<RefCell<Vec<ExchangeWidget>>> = Rc::new(RefCell::new(vec![]));
 
     let vbox_exchanges = gtk::Box::new(gtk::Orientation::Vertical, 10);
     let prompt_text_box = PromptTextBox(clear_prompt.clone());
@@ -456,26 +327,25 @@ fn Exchanges(
                         move || delete_exchange(&exchanges, &deletions, id)
                     });
                     exchange.insert_before(&vbox_exchanges, Some(&prompt_text_box));
-                    exchanges_memo.borrow_mut().push((id, exchange));
+                    exchanges_memo.borrow_mut().push(exchange);
                 },
                 VecDiff::RemoveAt { index } => {
-                    let (id, child) = exchanges_memo.borrow_mut().remove(index);
-                    deletions.borrow_mut().push(id);
+                    let child = exchanges_memo.borrow_mut().remove(index);
+                    deletions.borrow_mut().push(index);
                     vbox_exchanges.remove(&child);
                 },
                 VecDiff::Pop {} => {
-                    let (id, child) = exchanges_memo.borrow_mut().pop().unwrap();
-                    deletions.borrow_mut().push(id);
+                    let child = exchanges_memo.borrow_mut().pop().unwrap();
+                    deletions.borrow_mut().push(exchanges_memo.borrow().len());
                     vbox_exchanges.remove(&child);
                 },
                 VecDiff::Clear {} => {
-                    while let Some(child) = vbox_exchanges.first_child() {
-                        if child == prompt_text_box {
-                            break;
-                        }
-
-                        vbox_exchanges.remove(&child);
+                    for exchange in exchanges_memo.borrow().iter() {
+                        vbox_exchanges.remove(exchange);
                     }
+                    *id_counter.borrow_mut() = 0;
+                    deletions.borrow_mut().clear();
+                    exchanges_memo.borrow_mut().clear();
                 },
                 _ => panic!("Not supported: {:?}", vd)
             }
@@ -486,7 +356,15 @@ fn Exchanges(
     return (prompt_text_box.buffer(), vbox_exchanges);
 }
 
-pub fn Chat() -> impl IsA<gtk::Widget> {
+fn SettingsButton(stack: gtk::Stack) -> gtk::Button {
+    let button = gtk::Button::new();
+    button.set_label("Settings");
+
+    button.connect_clicked(move |_| stack.set_visible_child_name("settings"));
+    return button;
+}
+
+pub fn Chat(stack: gtk::Stack, settings: Mutable<Settings>) -> impl IsA<gtk::Widget> {
     let exchanges: MutableVec<(String, String)> = MutableVec::new();
     let response_tokens = MutableVec::new();
     let streaming = Mutable::new(false);
@@ -513,19 +391,19 @@ pub fn Chat() -> impl IsA<gtk::Widget> {
     hbox.append(&SubmitButton(
         exchanges,
         move || get_buffer_content(&prompt_buffer),
+        settings,
         clear_prompt,
         response_tokens,
         streaming.clone()
     ));
 
-    let dummy_label = gtk::Label::new(None);
-    dummy_label.set_hexpand(true);
-    hbox.append(&dummy_label);
+    hbox.append(&DummyLabel(gtk::Orientation::Horizontal));
 
-    hbox.append(&EditModeButton(edit_mode, streaming.clone()));
-
-    let cancel_button = CancelButton(streaming);
+    let cancel_button = CancelButton(streaming.clone());
     hbox.append(&cancel_button);
+
+    hbox.append(&EditModeButton(edit_mode, streaming));
+    hbox.append(&SettingsButton(stack));
 
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 5);
     vbox.set_css_classes(&["top-level-box"]);

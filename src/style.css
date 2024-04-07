@@ -2,10 +2,32 @@
     padding: 12px 8px;
 }
 
-textview, .message_label, response {
+.popup-window {
+    padding: 10px;
+    background-color: @theme_bg_color;
+}
+
+textview, .message_label, .response {
     font-size: 8pt;
     padding: 0.5em;
     background-color: shade(@theme_bg_color, 0.85);
+}
+
+.api-key-list {
+    font-size: 7pt;
+}
+
+.settings-box {
+    font-size: 8pt;
+}
+
+.title {
+    font-size: 10pt;
+}
+
+.error-label {
+    font-size: 8pt;
+    color: red;
 }
 
 button {
@@ -22,15 +44,3 @@ button {
     padding: 0 0;
     font-size: 6pt;
 }
-
-/* textview { */
-/*     /* font-size: small; */ */
-/*     padding: 0.5em; */
-/* } */
-
-/* .response_label { */
-/* } */
-
-/* scrolledwindow {
-    height: 10em;
-} */
